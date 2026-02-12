@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { randomBytes } = require('crypto');
 const {
   Client,
   GatewayIntentBits,
@@ -27,12 +28,16 @@ const parties = new Map();
 const creationCache = new Map();
 const threadsToDelete = new Map();
 
-// --- KONFIGURACJA WYGLĄDU ---
+// --- KONFIGURACJA PRODUKCYJNA ---
+const WARN_MINUTES = 15;      // Przypomnienie po 15 min
+const EXPIRE_MINUTES = 20;    // Usunięcie ogłoszenia po 20 min
+const THREAD_EXPIRY_DAYS = 5; // Wątek usuwa się po 5 dniach (zmień wg potrzeb)
+
 const modeColors = {
-  'Ranked': 0x00FF00,    // Zielony
-  'Normal': 0x00FFFF,    // Jasny niebieski
-  'Battlecup': 0x808080, // Szary
-  'Inhouse': 0x808080    // Szary
+  'Ranked': 0x00FF00,
+  'Normal': 0x00FFFF,
+  'Battlecup': 0x808080,
+  'Inhouse': 0x808080
 };
 
 const modeEmojis = {
@@ -45,18 +50,21 @@ const modeEmojis = {
 const commands = [{ name: 'party', description: 'Wysyła panel party maker' }];
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-// --- PANEL KONFIGURACJI ---
+// --- FUNKCJA PANELU ---
 function createSetupPanel(userId, mode) {
   const data = creationCache.get(userId) || { count: '1', ranks: ['Dowolna'], vc: null };
   
   const countMenu = new StringSelectMenuBuilder()
     .setCustomId(`setcount_${mode}`)
-    .setPlaceholder(`Ilość graczy: ${data.count}`)
-    .addOptions(Array.from({ length: 9 }, (_, i) => ({
-      label: `Szukam +${i + 1}`,
-      value: `${i + 1}`,
-      default: data.count === `${i + 1}`
-    })));
+    .setPlaceholder(`Szukam: ${data.count === 'Obojętnie' ? 'Obojętnie' : '+' + data.count}`)
+    .addOptions([
+      { label: 'Obojętnie', value: 'Obojętnie', default: data.count === 'Obojętnie' },
+      ...Array.from({ length: 9 }, (_, i) => ({
+        label: `Szukam +${i + 1}`,
+        value: `${i + 1}`,
+        default: data.count === `${i + 1}`
+      }))
+    ]);
 
   const rankMenu = new StringSelectMenuBuilder()
     .setCustomId(`setranks_${mode}`)
@@ -66,7 +74,7 @@ function createSetupPanel(userId, mode) {
 
   const vcMenu = new ChannelSelectMenuBuilder()
     .setCustomId(`setvc_${mode}`)
-    .setPlaceholder('Wybierz kanał głosowy')
+    .setPlaceholder('Wybierz kanał głosowy (opcjonalnie)')
     .setChannelTypes(ChannelType.GuildVoice);
 
   const publishBtn = new ButtonBuilder()
@@ -75,7 +83,7 @@ function createSetupPanel(userId, mode) {
     .setStyle(ButtonStyle.Success);
 
   return {
-    content: `### 🛠️ Konfiguracja: **${mode}**\n➡️ Graczy: **+${data.count}**\n🔰 Rangi: **${data.ranks.join(', ')}**\n🔊 Kanał: ${data.vc ? `<#${data.vc}>` : '*Nie wybrano*'}`,
+    content: `### 🛠️ Konfiguracja: **${mode}**\n➡️ Graczy: **${data.count === 'Obojętnie' ? 'Obojętnie' : '+' + data.count}**\n🔰 Rangi: **${data.ranks.join(', ')}**\n🔊 Kanał: ${data.vc ? `<#${data.vc}>` : '*Nie wybrano*'}`,
     components: [
       new ActionRowBuilder().addComponents(countMenu),
       new ActionRowBuilder().addComponents(rankMenu),
@@ -89,22 +97,20 @@ client.once(Events.ClientReady, async () => {
   console.log(`🚀 Bot aktywny: ${client.user.tag}`);
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log('✅ Komenda /party zarejestrowana!');
   } catch (e) { console.error(e); }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   const userId = interaction.user.id;
 
-  // 1. KOMENDA /PARTY
   if (interaction.isChatInputCommand() && interaction.commandName === 'party') {
     const embed = new EmbedBuilder()
       .setTitle('Jak to działa?')
       .setDescription(
-        '1️⃣ Wybierz tryb gry poniżej.\n' +
-        '2️⃣ Podaj liczbę graczy, rangi oraz kanał głosowy.\n' +
-        '3️⃣ Gotowe! Twoje ogłoszenie będzie widoczne.\n\n' +
-        'Po **15 min** dostaniesz zapytanie o aktualność, po **20 min** ogłoszenie wygaśnie.'
+        `1️⃣ Wybierz tryb gry poniżej.\n` +
+        `2️⃣ Podaj liczbę graczy, rangi oraz kanał głosowy.\n` +
+        `3️⃣ Gotowe! Twoje ogłoszenie będzie widoczne.\n\n` +
+        `Po **${WARN_MINUTES} min** otrzymasz przypomnienie, a po **${EXPIRE_MINUTES} min** ogłoszenie wygaśnie automatycznie.`
       )
       .setColor(0xFF0000);
 
@@ -119,11 +125,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return interaction.reply({ content: 'Panel wysłany!', flags: [MessageFlags.Ephemeral] });
   }
 
-  // 2. PRZYCISKI
   if (interaction.isButton()) {
     const [action, id] = interaction.customId.split('_');
 
     if (action === 'start') {
+      const hasActive = Array.from(parties.values()).some(p => p.leaderId === userId);
+      if (hasActive) {
+        return await interaction.reply({ content: '❌ Masz już aktywne ogłoszenie!', flags: [MessageFlags.Ephemeral] });
+      }
       creationCache.set(userId, { count: '1', ranks: ['Dowolna'], vc: null });
       return await interaction.reply({ ...createSetupPanel(userId, id), flags: [MessageFlags.Ephemeral] });
     }
@@ -132,15 +141,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const data = creationCache.get(userId);
       if (!data) return;
 
-      const partyId = Date.now().toString();
+      const partyId = randomBytes(4).toString('hex'); 
       const emoji = modeEmojis[id] || '📢';
+      const countDisplay = data.count === 'Obojętnie' ? 'Obojętnie' : `+${data.count}`;
 
       const embed = new EmbedBuilder()
         .setTitle(`${emoji} Szukamy do gry: ${id}`)
         .setColor(modeColors[id] || 0x2b2d31)
         .setDescription(
             `👤 **Lider:** <@${userId}>\n` +
-            `➡️ **Potrzeba:** ${data.count}\n` +
+            `➡️ **Potrzeba:** ${countDisplay}\n` +
             `🔰 **Rangi:** ${data.ranks.join(', ')}\n` +
             `⏰ **Start:** <t:${Math.floor(Date.now() / 1000)}:R>\n` +
             (data.vc ? `🔊 **Kanał:** <#${data.vc}>` : '')
@@ -152,12 +162,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       );
 
       const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
-      const thread = await msg.startThread({ name: `${id} - ${interaction.user.username}`, autoArchiveDuration: 60 });
+      const thread = await msg.startThread({ name: `${id} - ${interaction.user.username}`, autoArchiveDuration: 1440 });
       
       parties.set(partyId, { id: partyId, leaderId: userId, start: Date.now(), message: msg, threadId: thread.id, channelId: interaction.channelId, warned: false, warnMessageId: null });
+      creationCache.delete(userId);
       
-      await interaction.update({ content: '✅ Opublikowano! To okno zniknie za 10s.', components: [] });
-      setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 10000);
+      await interaction.update({ content: '✅ Opublikowano!', components: [] });
+      setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 5000);
     }
 
     if (action === 'join') {
@@ -170,17 +181,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 await thread.send(`👋 <@${userId}> dołączył do zainteresowanych!`);
             }
         } catch (e) {}
-        const reply = await interaction.reply({ content: 'Dodano do wątku!', flags: [MessageFlags.Ephemeral] });
-        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 10000);
+        await interaction.reply({ content: 'Dołączono do wątku!', flags: [MessageFlags.Ephemeral] });
+        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 5000);
     }
 
     if (action === 'extend') {
         const p = parties.get(id);
         if (!p || p.leaderId !== userId) return;
-        
         p.start = Date.now();
         p.warned = false;
-        
         if (p.warnMessageId) {
             try {
                 const wm = await interaction.channel.messages.fetch(p.warnMessageId);
@@ -188,17 +197,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
             } catch (e) {}
             p.warnMessageId = null;
         }
-        
-        await interaction.reply({ content: '✅ Przedłużono ogłoszenie! To okno zniknie za 10s.', flags: [MessageFlags.Ephemeral] });
-        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 10000);
+        await interaction.reply({ content: '✅ Przedłużono ogłoszenie!', flags: [MessageFlags.Ephemeral] });
     }
     
     if (action === 'stop') {
         const p = parties.get(id);
         if (p && p.leaderId === userId) {
-            // Dodaj wątek do kolejki usuwania za 5 dni
-            threadsToDelete.set(p.threadId, { deleteAt: Date.now() + (5 * 24 * 60 * 60 * 1000), channelId: p.channelId });
-
+            threadsToDelete.set(p.threadId, { deleteAt: Date.now() + (THREAD_EXPIRY_DAYS * 24 * 60 * 60 * 1000), channelId: p.channelId });
             await p.message.delete().catch(() => {});
             if (p.warnMessageId) {
                 try {
@@ -207,14 +212,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 } catch (e) {}
             }
             parties.delete(id);
-
-            await interaction.reply({ content: '🛑 Ogłoszenie usunięte. Wątek ogłoszenia zniknie za 5 dni, a ta wiadomość zniknie za chwilę...', flags: [MessageFlags.Ephemeral] });
-            setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 10000);
+            await interaction.reply({ content: `🛑 Zakończono. Wątek zostanie usunięty za ${THREAD_EXPIRY_DAYS} dni.`, flags: [MessageFlags.Ephemeral] });
         }
     }
   }
 
-  // Obsługa menu wyboru
   if (interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
     const [action, mode] = interaction.customId.split('_');
     const data = creationCache.get(userId);
@@ -226,30 +228,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-// --- PĘTLA OGŁOSZEŃ (co 30 sekund) ---
+// --- PĘTLA OGŁOSZEŃ (co 30 sek) ---
 setInterval(async () => {
   const now = Date.now();
   for (const [id, party] of parties.entries()) {
     const diff = (now - party.start) / 60000;
-
-    // --- TESTOWE CZASY (1 i 2 min) - Zmień na 15 i 20 przed publikacją! ---
-    if (diff >= 1 && !party.warned) { 
+    if (diff >= WARN_MINUTES && !party.warned) { 
       party.warned = true;
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`extend_${party.id}`).setLabel('Nadal szukam').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`stop_${party.id}`).setLabel('Zakończ').setStyle(ButtonStyle.Danger)
       );
       try { 
-        const wm = await party.message.channel.send({ 
-          content: `⚠️ <@${party.leaderId}>, Twoje ogłoszenie wygaśnie za 5 min!`, 
-          components: [row] 
-        }); 
+        const wm = await party.message.channel.send({ content: `⚠️ <@${party.leaderId}>, czy nadal szukasz? Ogłoszenie wygaśnie za 5 min!`, components: [row] }); 
         party.warnMessageId = wm.id;
       } catch (e) {}
     }
-
-    if (diff >= 2) { 
-      threadsToDelete.set(party.threadId, { deleteAt: now + (5 * 24 * 60 * 60 * 1000), channelId: party.channelId });
+    if (diff >= EXPIRE_MINUTES) { 
+      threadsToDelete.set(party.threadId, { deleteAt: now + (THREAD_EXPIRY_DAYS * 24 * 60 * 60 * 1000), channelId: party.channelId });
       await party.message.delete().catch(() => {});
       if (party.warnMessageId) {
         try {
@@ -262,21 +258,23 @@ setInterval(async () => {
   }
 }, 30000);
 
-// --- PĘTLA WĄTKÓW (co 1 godzinę) ---
+// --- PĘTLA WĄTKÓW (Produkcyjna: co 1h) ---
 setInterval(async () => {
+  if (threadsToDelete.size === 0) return;
   const now = Date.now();
-  if (threadsToDelete.size > 0) {
-    for (const [threadId, data] of threadsToDelete.entries()) {
-        if (now >= data.deleteAt) {
-            try {
-                const channel = await client.channels.fetch(data.channelId);
-                const thread = await channel.threads.fetch(threadId);
-                if (thread) await thread.delete();
-            } catch (e) {}
-            threadsToDelete.delete(threadId);
+  for (const [threadId, data] of threadsToDelete.entries()) {
+    if (now >= data.deleteAt) {
+      try {
+        const channel = await client.channels.fetch(data.channelId).catch(() => null);
+        if (channel) {
+          const thread = await channel.threads.fetch(threadId).catch(() => null);
+          if (thread) await thread.delete();
         }
+        console.log(`[System] Usunięto stary wątek: ${threadId}`);
+      } catch (e) {}
+      threadsToDelete.delete(threadId);
     }
   }
-}, 3600000);
+}, 3600000); // 1 godzina
 
 client.login(TOKEN);
