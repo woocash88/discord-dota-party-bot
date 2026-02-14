@@ -92,13 +92,14 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 // --- ZMODYFIKOWANA FUNKCJA PANELU ---
 function createSetupPanel(interaction, mode) {
   const userId = interaction.user.id;
+  const guild = interaction.guild; // Definiujemy guild pobierając ją z interakcji
+  
   const data = creationCache.get(userId) || { count: '1', ranks: [], vc: null };
   
- const voiceChannels = guild.channels.cache
+  // Pobieramy kanały, filtrujemy te, które @everyone widzi, i sortujemy je po pozycji na liście
+  const voiceChannels = guild.channels.cache
     .filter(c => c.type === ChannelType.GuildVoice)
-    // FILTR: Pokazuj tylko kanały publiczne
     .filter(c => c.permissionsFor(guild.roles.everyone).has(PermissionFlagsBits.ViewChannel))
-    // SORTOWANIE: Układa kanały zgodnie z kolejnością na liście serwera
     .sort((a, b) => a.rawPosition - b.rawPosition)
     .first(25);
 
@@ -125,7 +126,6 @@ function createSetupPanel(interaction, mode) {
       default: data.ranks.includes(r)
     })));
 
-  // Zamiana ChannelSelectMenu na StringSelectMenu z filtrem
   const vcMenu = new StringSelectMenuBuilder()
     .setCustomId(`setvc_${mode}`)
     .setPlaceholder('Wybierz kanał głosowy (opcjonalnie)');
