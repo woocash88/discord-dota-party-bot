@@ -94,13 +94,13 @@ function createSetupPanel(interaction, mode) {
   const userId = interaction.user.id;
   const data = creationCache.get(userId) || { count: '1', ranks: [], vc: null };
   
-  // Pobieramy kanały głosowe z serwera
-  const guild = interaction.guild;
-  const voiceChannels = guild.channels.cache
+ const voiceChannels = guild.channels.cache
     .filter(c => c.type === ChannelType.GuildVoice)
-    // FILTR: Pokazuj tylko kanały, które @everyone może widzieć (nie są prywatne)
+    // FILTR: Pokazuj tylko kanały publiczne
     .filter(c => c.permissionsFor(guild.roles.everyone).has(PermissionFlagsBits.ViewChannel))
-    .first(25); // Limit Discorda dla select menu to 25 opcji
+    // SORTOWANIE: Układa kanały zgodnie z kolejnością na liście serwera
+    .sort((a, b) => a.rawPosition - b.rawPosition)
+    .first(25);
 
   const countMenu = new StringSelectMenuBuilder()
     .setCustomId(`setcount_${mode}`)
