@@ -49,7 +49,7 @@ const modeEmojis = {
 
 // Mapowanie trybów na role Discorda
 const modeRoles = {
-  'Ranked': '<@&980824750291050527>',
+  'Ranked': '<@&980824750291050527> ',
   'Normal': '<@&985527058929180683>',
   'Battlecup': '<@&1104441802200719492>',
   'Inhouse': '<@&980824894172446740>'
@@ -220,13 +220,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const partyId = randomBytes(4).toString('hex'); 
       const emoji = modeEmojis[id] || '📢';
-      const roleMention = modeRoles[id] || id; // Użycie wzmianki roli zamiast czystego tekstu ID
+      const roleMention = modeRoles[id] || id; 
       const countDisplay = data.count === 'Obojętnie' ? 'Obojętnie' : `+${data.count}`;
       const finalRanks = data.ranks.length > 0 ? data.ranks : ['Dowolna'];
       const formattedRanks = finalRanks.map(r => rankDisplay[r] || r).join(' ');
 
       const embed = new EmbedBuilder()
-        .setTitle(`${emoji} ${roleMention}`) // Zmienione z ${id} na ${roleMention}
         .setColor(modeColors[id] || 0x2b2d31)
         .setDescription(
             `👤 **Lider:** <@${userId}>\n` +
@@ -241,7 +240,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         new ButtonBuilder().setCustomId(`stop_${partyId}`).setLabel('Zakończ').setEmoji('🛑').setStyle(ButtonStyle.Danger)
       );
 
-      const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
+      // ZMIANA TUTAJ: Dodano content: roleMention, aby tag był NAD embedem
+      const msg = await interaction.channel.send({ content: roleMention, embeds: [embed], components: [row] });
       const thread = await msg.startThread({ name: `${id} - ${interaction.user.username}`, autoArchiveDuration: 1440 });
       
       parties.set(partyId, { 
