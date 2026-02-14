@@ -17,7 +17,8 @@ const {
 } = require('discord.js');
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  // Dodano GuildMessages, aby bot mógł zarządzać wiadomościami w wątkach
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
 });
 
 const TOKEN = process.env.TOKEN;
@@ -28,15 +29,15 @@ const parties = new Map();
 const creationCache = new Map();
 const threadsToDelete = new Map();
 
-// --- KONFIGURACJA PRODUKCYJNA ---
-const WARN_MINUTES = 15;      // Przypomnienie po 15 min
-const EXPIRE_MINUTES = 20;    // Usunięcie ogłoszenia po 20 min
-const THREAD_EXPIRY_DAYS = 5; // Wątek usuwa się po 5 dniach (zmień wg potrzeb)
+// --- KONFIGURACJA ---
+const WARN_MINUTES = 25;      
+const EXPIRE_MINUTES = 30;    
+const THREAD_EXPIRY_DAYS = 1; 
 
 const modeColors = {
   'Ranked': 0x00FF00,
   'Normal': 0x00FFFF,
-  'Battlecup': 0x808080,
+  'Battlecup': 0xFFD700,
   'Inhouse': 0x808080
 };
 
@@ -47,13 +48,52 @@ const modeEmojis = {
   'Inhouse': '🏠'
 };
 
+const rankEmojis = {
+  'Herald': '985542468093214761',
+  'Guardian': '985542497650491392',
+  'Crusader': '985542375847919676',
+  'Archon': '985542342188617748',
+  'Legend': '985542440133992459',
+  'Ancient': '985538142436220958',
+  'Divine': '985542414955593798',
+  'Immortal': '969396388280545320',
+  'Dowolna': '❓'
+};
+
+const rankDisplay = {
+  'Dowolna': '❓ Dowolna',
+  'Herald': '<:BBherald:985542468093214761> Herald,',
+  'Guardian': '<:BBuardian:985542497650491392> Guardian,',
+  'Crusader': '<:BCrusader:985542375847919676> Crusader,',
+  'Archon': '<:BDarchon:985542342188617748> Archon,',
+  'Legend': '<:BLegend:985542440133992459> Legend,',
+  'Ancient': '<:BMAncient:985538142436220958> Ancient,',
+  'Divine': '<:BMdivine:985542414955593798> Divine,',
+  'Immortal': '<:BNimmortal:969396388280545320> Immortal',
+};
+
+// --- FUNKCJA CZYSZCZĄCA WĄTEK ---
+async function clearThread(threadId) {
+  try {
+    const thread = await client.channels.fetch(threadId).catch(() => null);
+    if (thread && thread.isThread()) {
+      const messages = await thread.messages.fetch({ limit: 100 });
+      if (messages.size > 0) {
+        // Usuwa wszystkie logi dołączeń i powiadomienia
+        await thread.bulkDelete(messages).catch(() => {
+          messages.forEach(msg => msg.delete().catch(() => {}));
+        });
+      }
+      await thread.send("🔒 *To ogłoszenie zostało zakończone. Wątek zostanie wkrótce usunięty.*");
+    }
+  } catch (e) { console.error("Błąd czyszczenia wątku:", e); }
+}
+
 const commands = [{ name: 'party', description: 'Wysyła panel party maker' }];
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-// --- FUNKCJA PANELU ---
 function createSetupPanel(userId, mode) {
-  const data = creationCache.get(userId) || { count: '1', ranks: ['Dowolna'], vc: null };
-  
+  const data = creationCache.get(userId) || { count: '1', ranks: [], vc: null };
   const countMenu = new StringSelectMenuBuilder()
     .setCustomId(`setcount_${mode}`)
     .setPlaceholder(`Szukam: ${data.count === 'Obojętnie' ? 'Obojętnie' : '+' + data.count}`)
@@ -68,9 +108,14 @@ function createSetupPanel(userId, mode) {
 
   const rankMenu = new StringSelectMenuBuilder()
     .setCustomId(`setranks_${mode}`)
-    .setPlaceholder('Wybierz rangi')
+    .setPlaceholder('Wybierz rangi (możesz wybrać kilka)')
     .setMinValues(1).setMaxValues(5)
-    .addOptions(['Dowolna', 'Herald', 'Guardian', 'Crusader', 'Archon', 'Legend', 'Ancient', 'Divine', 'Immortal'].map(r => ({ label: r, value: r })));
+    .addOptions(Object.keys(rankEmojis).map(r => ({
+      label: r,
+      value: r,
+      emoji: rankEmojis[r],
+      default: data.ranks.includes(r)
+    })));
 
   const vcMenu = new ChannelSelectMenuBuilder()
     .setCustomId(`setvc_${mode}`)
@@ -82,8 +127,10 @@ function createSetupPanel(userId, mode) {
     .setLabel('Opublikuj Ogłoszenie')
     .setStyle(ButtonStyle.Success);
 
+  const ranksText = data.ranks.length > 0 ? data.ranks.join(', ') : '*Nie wybrano*';
+
   return {
-    content: `### 🛠️ Konfiguracja: **${mode}**\n➡️ Graczy: **${data.count === 'Obojętnie' ? 'Obojętnie' : '+' + data.count}**\n🔰 Rangi: **${data.ranks.join(', ')}**\n🔊 Kanał: ${data.vc ? `<#${data.vc}>` : '*Nie wybrano*'}`,
+    content: `### 🛠️ Konfiguracja: **${mode}**\n➡️ Graczy: **${data.count === 'Obojętnie' ? 'Obojętnie' : '+' + data.count}**\n🔰 Rangi: **${ranksText}**\n🔊 Kanał: ${data.vc ? `<#${data.vc}>` : '*Nie wybrano*'}`,
     components: [
       new ActionRowBuilder().addComponents(countMenu),
       new ActionRowBuilder().addComponents(rankMenu),
@@ -122,7 +169,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     );
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
-    return interaction.reply({ content: 'Panel wysłany!', flags: [MessageFlags.Ephemeral] });
+    await interaction.reply({ content: 'Panel wysłany!', flags: [MessageFlags.Ephemeral] });
+    setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
+    return;
   }
 
   if (interaction.isButton()) {
@@ -131,9 +180,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (action === 'start') {
       const hasActive = Array.from(parties.values()).some(p => p.leaderId === userId);
       if (hasActive) {
-        return await interaction.reply({ content: '❌ Masz już aktywne ogłoszenie!', flags: [MessageFlags.Ephemeral] });
+        await interaction.reply({ content: '❌ Masz już aktywne ogłoszenie!', flags: [MessageFlags.Ephemeral] });
+        return setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
       }
-      creationCache.set(userId, { count: '1', ranks: ['Dowolna'], vc: null });
+      creationCache.set(userId, { count: '1', ranks: [], vc: null });
       return await interaction.reply({ ...createSetupPanel(userId, id), flags: [MessageFlags.Ephemeral] });
     }
 
@@ -144,14 +194,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const partyId = randomBytes(4).toString('hex'); 
       const emoji = modeEmojis[id] || '📢';
       const countDisplay = data.count === 'Obojętnie' ? 'Obojętnie' : `+${data.count}`;
+      const finalRanks = data.ranks.length > 0 ? data.ranks : ['Dowolna'];
+      const formattedRanks = finalRanks.map(r => rankDisplay[r] || r).join(' ');
 
       const embed = new EmbedBuilder()
-        .setTitle(`${emoji} Szukamy do gry: ${id}`)
+        .setTitle(`${emoji} ${id}`)
         .setColor(modeColors[id] || 0x2b2d31)
         .setDescription(
             `👤 **Lider:** <@${userId}>\n` +
             `➡️ **Potrzeba:** ${countDisplay}\n` +
-            `🔰 **Rangi:** ${data.ranks.join(', ')}\n` +
+            `🔰 **Rangi:** ${formattedRanks}\n` +
             `⏰ **Start:** <t:${Math.floor(Date.now() / 1000)}:R>\n` +
             (data.vc ? `🔊 **Kanał:** <#${data.vc}>` : '')
         );
@@ -164,25 +216,45 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
       const thread = await msg.startThread({ name: `${id} - ${interaction.user.username}`, autoArchiveDuration: 1440 });
       
-      parties.set(partyId, { id: partyId, leaderId: userId, start: Date.now(), message: msg, threadId: thread.id, channelId: interaction.channelId, warned: false, warnMessageId: null });
+      parties.set(partyId, { 
+        id: partyId, leaderId: userId, members: [userId], start: Date.now(), 
+        message: msg, threadId: thread.id, channelId: interaction.channelId, 
+        warned: false, warnMessageId: null 
+      });
+
       creationCache.delete(userId);
-      
       await interaction.update({ content: '✅ Opublikowano!', components: [] });
-      setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 5000);
+      setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
     }
 
     if (action === 'join') {
         const p = parties.get(id);
-        if (!p) return interaction.reply({ content: 'Ogłoszenie wygasło.', flags: [MessageFlags.Ephemeral] });
+        if (!p) {
+            await interaction.reply({ content: 'To ogłoszenie już wygasło.', flags: [MessageFlags.Ephemeral] });
+            return setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
+        }
+        if (p.leaderId === userId) {
+            await interaction.reply({ content: '❌ To Twoje ogłoszenie!', flags: [MessageFlags.Ephemeral] });
+            return setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
+        }
+        if (p.members.includes(userId)) {
+            await interaction.reply({ content: 'ℹ️ Już dołączyłeś.', flags: [MessageFlags.Ephemeral] });
+            return setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
+        }
+
         try {
-            const thread = await interaction.channel.threads.fetch(p.threadId);
+            const thread = await client.channels.fetch(p.threadId);
             if (thread) {
                 await thread.members.add(userId);
-                await thread.send(`👋 <@${userId}> dołączył do zainteresowanych!`);
+                await thread.send(`👋 <@${userId}> dołączył!`);
+                p.members.push(userId);
             }
-        } catch (e) {}
-        await interaction.reply({ content: 'Dołączono do wątku!', flags: [MessageFlags.Ephemeral] });
-        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 5000);
+        } catch (e) {
+            await interaction.reply({ content: 'Błąd wątku.', flags: [MessageFlags.Ephemeral] });
+            return setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
+        }
+        await interaction.reply({ content: '✅ Dołączono!', flags: [MessageFlags.Ephemeral] });
+        setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
     }
 
     if (action === 'extend') {
@@ -192,27 +264,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
         p.warned = false;
         if (p.warnMessageId) {
             try {
-                const wm = await interaction.channel.messages.fetch(p.warnMessageId);
-                await wm.delete();
+                const thread = await client.channels.fetch(p.threadId).catch(() => null);
+                if (thread) {
+                    const wm = await thread.messages.fetch(p.warnMessageId).catch(() => null);
+                    if (wm) await wm.delete().catch(() => {});
+                }
             } catch (e) {}
             p.warnMessageId = null;
         }
         await interaction.reply({ content: '✅ Przedłużono ogłoszenie!', flags: [MessageFlags.Ephemeral] });
+        setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
     }
     
     if (action === 'stop') {
         const p = parties.get(id);
         if (p && p.leaderId === userId) {
-            threadsToDelete.set(p.threadId, { deleteAt: Date.now() + (THREAD_EXPIRY_DAYS * 24 * 60 * 60 * 1000), channelId: p.channelId });
-            await p.message.delete().catch(() => {});
-            if (p.warnMessageId) {
-                try {
-                    const wm = await interaction.channel.messages.fetch(p.warnMessageId);
-                    await wm.delete();
-                } catch (e) {}
+            // Czyścimy wątek przed usunięciem/zarchiwizowaniem
+            await clearThread(p.threadId);
+
+            if (THREAD_EXPIRY_DAYS === 0) {
+                const thread = await client.channels.fetch(p.threadId).catch(() => null);
+                if (thread) await thread.delete().catch(() => {});
+            } else {
+                threadsToDelete.set(p.threadId, { deleteAt: Date.now() + (THREAD_EXPIRY_DAYS * 24 * 60 * 60 * 1000), channelId: p.channelId });
             }
+            await p.message.delete().catch(() => {});
+            
             parties.delete(id);
-            await interaction.reply({ content: `🛑 Zakończono. Wątek zostanie usunięty za ${THREAD_EXPIRY_DAYS} dni.`, flags: [MessageFlags.Ephemeral] });
+            await interaction.reply({ content: '🛑 Ogłoszenie zamknięte i wątek wyczyszczony.', flags: [MessageFlags.Ephemeral] });
+            setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
         }
     }
   }
@@ -228,53 +308,48 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-// --- PĘTLA OGŁOSZEŃ (co 30 sek) ---
+// PĘTLA SPRZĄTAJĄCA
 setInterval(async () => {
   const now = Date.now();
   for (const [id, party] of parties.entries()) {
     const diff = (now - party.start) / 60000;
+
     if (diff >= WARN_MINUTES && !party.warned) { 
       party.warned = true;
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`extend_${party.id}`).setLabel('Nadal szukam').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`stop_${party.id}`).setLabel('Zakończ').setStyle(ButtonStyle.Danger)
       );
-      try { 
-        const wm = await party.message.channel.send({ content: `⚠️ <@${party.leaderId}>, czy nadal szukasz? Ogłoszenie wygaśnie za 5 min!`, components: [row] }); 
+      const thread = await client.channels.fetch(party.threadId).catch(() => null);
+      if (thread) {
+        const wm = await thread.send({ content: `⚠️ <@${party.leaderId}> czy nadal szukasz graczy?`, components: [row] }); 
         party.warnMessageId = wm.id;
-      } catch (e) {}
+      }
     }
+
     if (diff >= EXPIRE_MINUTES) { 
+      // Czyszczenie wątku przy automatycznym wygaśnięciu
+      await clearThread(party.threadId);
+
       threadsToDelete.set(party.threadId, { deleteAt: now + (THREAD_EXPIRY_DAYS * 24 * 60 * 60 * 1000), channelId: party.channelId });
       await party.message.delete().catch(() => {});
-      if (party.warnMessageId) {
-        try {
-            const wm = await party.message.channel.messages.fetch(party.warnMessageId);
-            await wm.delete();
-        } catch (e) {}
-      }
       parties.delete(id);
     }
   }
 }, 30000);
 
-// --- PĘTLA WĄTKÓW (Produkcyjna: co 1h) ---
 setInterval(async () => {
-  if (threadsToDelete.size === 0) return;
   const now = Date.now();
   for (const [threadId, data] of threadsToDelete.entries()) {
     if (now >= data.deleteAt) {
-      try {
-        const channel = await client.channels.fetch(data.channelId).catch(() => null);
-        if (channel) {
-          const thread = await channel.threads.fetch(threadId).catch(() => null);
-          if (thread) await thread.delete();
-        }
-        console.log(`[System] Usunięto stary wątek: ${threadId}`);
-      } catch (e) {}
+      const channel = await client.channels.fetch(data.channelId).catch(() => null);
+      if (channel) {
+        const thread = await channel.threads.fetch(threadId).catch(() => null);
+        if (thread) await thread.delete().catch(() => {});
+      }
       threadsToDelete.delete(threadId);
     }
   }
-}, 3600000); // 1 godzina
+}, 600000);
 
 client.login(TOKEN);
