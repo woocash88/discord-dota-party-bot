@@ -47,6 +47,14 @@ const modeEmojis = {
   'Inhouse': '🏠'
 };
 
+// Mapowanie trybów na role Discorda
+const modeRoles = {
+  'Ranked': '<@&980824750291050527>',
+  'Normal': '<@&985527058929180683>',
+  'Battlecup': '<@&1104441802200719492>',
+  'Inhouse': '<@&980824894172446740>'
+};
+
 const rankEmojis = {
   'Dowolna': '❓',
   'Herald': '985542468093214761',
@@ -92,11 +100,10 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 // --- ZMODYFIKOWANA FUNKCJA PANELU ---
 function createSetupPanel(interaction, mode) {
   const userId = interaction.user.id;
-  const guild = interaction.guild; // Definiujemy guild pobierając ją z interakcji
+  const guild = interaction.guild; 
   
   const data = creationCache.get(userId) || { count: '1', ranks: [], vc: null };
   
-  // Pobieramy kanały, filtrujemy te, które @everyone widzi, i sortujemy je po pozycji na liście
   const voiceChannels = guild.channels.cache
     .filter(c => c.type === ChannelType.GuildVoice)
     .filter(c => c.permissionsFor(guild.roles.everyone).has(PermissionFlagsBits.ViewChannel))
@@ -213,12 +220,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const partyId = randomBytes(4).toString('hex'); 
       const emoji = modeEmojis[id] || '📢';
+      const roleMention = modeRoles[id] || id; // Użycie wzmianki roli zamiast czystego tekstu ID
       const countDisplay = data.count === 'Obojętnie' ? 'Obojętnie' : `+${data.count}`;
       const finalRanks = data.ranks.length > 0 ? data.ranks : ['Dowolna'];
       const formattedRanks = finalRanks.map(r => rankDisplay[r] || r).join(' ');
 
       const embed = new EmbedBuilder()
-        .setTitle(`${emoji} ${id}`)
+        .setTitle(`${emoji} ${roleMention}`) // Zmienione z ${id} na ${roleMention}
         .setColor(modeColors[id] || 0x2b2d31)
         .setDescription(
             `👤 **Lider:** <@${userId}>\n` +
