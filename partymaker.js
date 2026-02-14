@@ -8,16 +8,15 @@ const {
   ButtonStyle,
   EmbedBuilder,
   StringSelectMenuBuilder,
-  ChannelSelectMenuBuilder,
   ChannelType,
   Events,
   MessageFlags,
   REST,
-  Routes
+  Routes,
+  PermissionFlagsBits
 } = require('discord.js');
 
 const client = new Client({
-  // Dodano GuildMessages, aby bot mógł zarządzać wiadomościami w wątkach
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
 });
 
@@ -49,7 +48,7 @@ const modeEmojis = {
 };
 
 const rankEmojis = {
- 'Dowolna': '❓',
+  'Dowolna': '❓',
   'Herald': '985542468093214761',
   'Guardian': '985542497650491392',
   'Crusader': '985542375847919676',
@@ -72,14 +71,12 @@ const rankDisplay = {
   'Immortal': '<:BNimmortal:969396388280545320> Immortal',
 };
 
-// --- FUNKCJA CZYSZCZĄCA WĄTEK ---
 async function clearThread(threadId) {
   try {
     const thread = await client.channels.fetch(threadId).catch(() => null);
     if (thread && thread.isThread()) {
       const messages = await thread.messages.fetch({ limit: 100 });
       if (messages.size > 0) {
-        // Usuwa wszystkie logi dołączeń i powiadomienia
         await thread.bulkDelete(messages).catch(() => {
           messages.forEach(msg => msg.delete().catch(() => {}));
         });
@@ -92,8 +89,19 @@ async function clearThread(threadId) {
 const commands = [{ name: 'party', description: 'Wysyła panel party maker' }];
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-function createSetupPanel(userId, mode) {
+// --- ZMODYFIKOWANA FUNKCJA PANELU ---
+function createSetupPanel(interaction, mode) {
+  const userId = interaction.user.id;
   const data = creationCache.get(userId) || { count: '1', ranks: [], vc: null };
+  
+  // Pobieramy kanały głosowe z serwera
+  const guild = interaction.guild;
+  const voiceChannels = guild.channels.cache
+    .filter(c => c.type === ChannelType.GuildVoice)
+    // FILTR: Pokazuj tylko kanały, które @everyone może widzieć (nie są prywatne)
+    .filter(c => c.permissionsFor(guild.roles.everyone).has(PermissionFlagsBits.ViewChannel))
+    .first(25); // Limit Discorda dla select menu to 25 opcji
+
   const countMenu = new StringSelectMenuBuilder()
     .setCustomId(`setcount_${mode}`)
     .setPlaceholder(`Szukam: ${data.count === 'Obojętnie' ? 'Obojętnie' : '+' + data.count}`)
@@ -117,10 +125,22 @@ function createSetupPanel(userId, mode) {
       default: data.ranks.includes(r)
     })));
 
-  const vcMenu = new ChannelSelectMenuBuilder()
+  // Zamiana ChannelSelectMenu na StringSelectMenu z filtrem
+  const vcMenu = new StringSelectMenuBuilder()
     .setCustomId(`setvc_${mode}`)
-    .setPlaceholder('Wybierz kanał głosowy (opcjonalnie)')
-    .setChannelTypes(ChannelType.GuildVoice);
+    .setPlaceholder('Wybierz kanał głosowy (opcjonalnie)');
+
+  const vcOptions = voiceChannels.map(vc => ({
+    label: vc.name,
+    value: vc.id,
+    default: data.vc === vc.id
+  }));
+
+  if (vcOptions.length > 0) {
+    vcMenu.addOptions(vcOptions);
+  } else {
+    vcMenu.addOptions([{ label: 'Brak dostępnych kanałów', value: 'none', disabled: true }]);
+  }
 
   const publishBtn = new ButtonBuilder()
     .setCustomId(`publish_${mode}`)
@@ -184,7 +204,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return setTimeout(() => interaction.deleteReply().catch(() => {}), 1000);
       }
       creationCache.set(userId, { count: '1', ranks: [], vc: null });
-      return await interaction.reply({ ...createSetupPanel(userId, id), flags: [MessageFlags.Ephemeral] });
+      return await interaction.reply({ ...createSetupPanel(interaction, id), flags: [MessageFlags.Ephemeral] });
     }
 
     if (action === 'publish') {
@@ -279,7 +299,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (action === 'stop') {
         const p = parties.get(id);
         if (p && p.leaderId === userId) {
-            // Czyścimy wątek przed usunięciem/zarchiwizowaniem
             await clearThread(p.threadId);
 
             if (THREAD_EXPIRY_DAYS === 0) {
@@ -297,14 +316,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  if (interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
+  if (interaction.isStringSelectMenu()) {
     const [action, mode] = interaction.customId.split('_');
     const data = creationCache.get(userId);
     if (!data) return;
     if (action === 'setcount') data.count = interaction.values[0];
     if (action === 'setranks') data.ranks = interaction.values;
     if (action === 'setvc') data.vc = interaction.values[0];
-    return await interaction.update(createSetupPanel(userId, mode));
+    return await interaction.update(createSetupPanel(interaction, mode));
   }
 });
 
@@ -328,9 +347,7 @@ setInterval(async () => {
     }
 
     if (diff >= EXPIRE_MINUTES) { 
-      // Czyszczenie wątku przy automatycznym wygaśnięciu
       await clearThread(party.threadId);
-
       threadsToDelete.set(party.threadId, { deleteAt: now + (THREAD_EXPIRY_DAYS * 24 * 60 * 60 * 1000), channelId: party.channelId });
       await party.message.delete().catch(() => {});
       parties.delete(id);
@@ -351,6 +368,5 @@ setInterval(async () => {
     }
   }
 }, 600000);
-
 
 client.login(TOKEN);
