@@ -49,6 +49,7 @@ const modeEmojis = {
 };
 
 const rankEmojis = {
+ 'Dowolna': '❓',
   'Herald': '985542468093214761',
   'Guardian': '985542497650491392',
   'Crusader': '985542375847919676',
@@ -56,8 +57,7 @@ const rankEmojis = {
   'Legend': '985542440133992459',
   'Ancient': '985538142436220958',
   'Divine': '985542414955593798',
-  'Immortal': '969396388280545320',
-  'Dowolna': '❓'
+  'Immortal': '969396388280545320'
 };
 
 const rankDisplay = {
@@ -351,5 +351,6 @@ setInterval(async () => {
     }
   }
 }, 600000);
+
 
 client.login(TOKEN);
